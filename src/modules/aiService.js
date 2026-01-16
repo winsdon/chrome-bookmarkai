@@ -35,11 +35,14 @@ export class AIService {
       url: b.url
     }));
 
+    const hasCustomCategories = config.customCategories?.length > 0;
     const batchSize = 50;
+    
     if (bookmarkData.length <= batchSize) {
       const prompt = this.buildPrompt(bookmarkData, config.customCategories, maxRootCategories);
       const response = await this.callAI(prompt, config);
-      return this.enforceMaxRootCategories(this.parseResponse(response, bookmarks), maxRootCategories);
+      const parsed = this.parseResponse(response, bookmarks);
+      return hasCustomCategories ? parsed : this.enforceMaxRootCategories(parsed, maxRootCategories);
     }
 
     const allCategories = {};
@@ -59,7 +62,7 @@ export class AIService {
       }
     }
     
-    return this.enforceMaxRootCategories(allCategories, maxRootCategories);
+    return hasCustomCategories ? allCategories : this.enforceMaxRootCategories(allCategories, maxRootCategories);
   }
 
   enforceMaxRootCategories(categories, maxRootCategories) {
@@ -99,30 +102,51 @@ export class AIService {
   }
 
   buildPrompt(bookmarks, customCategories, maxRootCategories = 10) {
-    const categoryHint = customCategories?.length > 0 
-      ? `可参考以下分类结构: ${customCategories.join(', ')}。根据需要创建子分类或新分类。`
+    const hasCustomCategories = customCategories?.length > 0;
+    
+    // 从自定义分类中提取一级分类（路径的第一部分）
+    const rootCategories = hasCustomCategories 
+      ? [...new Set(customCategories.map(c => c.split('/')[0].trim()))]
+      : [];
+    
+    // 构建预设的分类路径示例
+    const categoryPaths = hasCustomCategories 
+      ? customCategories.map(c => `"${c}"`).join(', ')
       : '';
+
+    const categoryInstruction = hasCustomCategories
+      ? `**【强制要求 - 必须严格遵守】**
+1. 一级分类只能使用以下名称：${rootCategories.join('、')}
+2. 预设的分类路径参考：${categoryPaths}
+3. 可以在预设路径下继续创建子分类，但一级分类名称不可更改
+4. 只有实在无法归入任何预设分类的书签，才放入"其他"分类
+5. **严禁创建预设之外的一级分类**`
+      : `分类层级指南:
+1. 第一层(大类): 技术开发、学习资源、新闻资讯、社交媒体、购物电商、影音娱乐、工作效率、生活服务、金融理财、设计创意、其他
+2. 第二层(中类): 根据内容细分，如 技术开发 下可分为 前端、后端、数据库、DevOps、AI/ML 等
+3. 第三层(小类): 可选，更具体的分类，如 前端 下可分为 React、Vue、CSS、工具 等`;
+
+    const exampleJson = hasCustomCategories && rootCategories.length > 0
+      ? `{
+  "${rootCategories[0]}/子分类1": ["书签id1", "书签id2"],
+  "${rootCategories[0]}/子分类2": ["书签id3"],
+  "${rootCategories.length > 1 ? rootCategories[1] : rootCategories[0]}/子分类": ["书签id4", "书签id5"]
+}`
+      : `{
+  "技术开发/前端/React": ["书签id1", "书签id2"],
+  "技术开发/后端/Python": ["书签id3"],
+  "学习资源/在线课程": ["书签id4", "书签id5"]
+}`;
 
     return `你是一个专业的书签整理助手。请分析以下书签并创建合理的多层级分类结构。
 
-${categoryHint}
+${categoryInstruction}
 
 书签列表:
 ${JSON.stringify(bookmarks, null, 2)}
 
-请以JSON格式返回**多层级**分类结果，使用路径格式表示层级，用"/"分隔，格式如下:
-{
-  "技术开发/前端/React": ["书签id1", "书签id2"],
-  "技术开发/前端/Vue": ["书签id3"],
-  "技术开发/后端/Python": ["书签id4"],
-  "学习资源/在线课程": ["书签id5"],
-  "影音娱乐/视频网站": ["书签id6", "书签id7"]
-}
-
-分类层级指南:
-1. 第一层(大类): 技术开发、学习资源、新闻资讯、社交媒体、购物电商、影音娱乐、工作效率、生活服务、金融理财、设计创意、其他
-2. 第二层(中类): 根据内容细分，如 技术开发 下可分为 前端、后端、数据库、DevOps、AI/ML 等
-3. 第三层(小类): 可选，更具体的分类，如 前端 下可分为 React、Vue、CSS、工具 等
+请以JSON格式返回分类结果，使用路径格式表示层级（用"/"分隔），格式示例:
+${exampleJson}
 
 要求:
 1. 层级深度2-3层为宜，不要超过3层
@@ -130,7 +154,9 @@ ${JSON.stringify(bookmarks, null, 2)}
 3. 分类名称简洁明了，使用中文
 4. 同类书签数量少于3个时，可合并到上一层级
 5. 根据URL域名和标题综合判断最合适的分类
-6. **重要：根目录最多只能有 ${maxRootCategories} 个一级分类**，超出的请合并到"其他"分类下
+${hasCustomCategories 
+  ? `6. **【最重要】一级分类只能是：${rootCategories.join('、')}，严禁使用其他名称**`
+  : `6. 根目录最多只能有 ${maxRootCategories} 个一级分类，超出的请合并到"其他"分类下`}
 7. 只返回JSON，不要有其他文字`;
   }
 
@@ -157,7 +183,7 @@ ${JSON.stringify(bookmarks, null, 2)}
           }
         ],
         temperature: 0.3,
-        max_tokens: 2000
+        max_tokens: 4000
       })
     });
 
